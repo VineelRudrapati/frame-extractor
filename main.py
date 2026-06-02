@@ -21,6 +21,50 @@ from PySide6.QtWidgets import (
 )
 
 
+class DraggableHandle(QLabel):
+    def __init__(self, parent=None, moved_callback=None, name=""):
+        super().__init__(parent)
+        self.moved_callback = moved_callback
+        self.name = name
+        self.setFixedSize(20, 40)
+        self.setStyleSheet(
+            "border-radius:10px; background: rgba(255,105,180,0.95); border: 2px solid white;"
+        )
+        self.setCursor(Qt.OpenHandCursor)
+        self._dragging = False
+
+    def mousePressEvent(self, event):
+        self._dragging = True
+        self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, event):
+        if not self._dragging:
+            return
+
+        # map global mouse position to parent coordinates
+        parent = self.parent()
+        if parent is None:
+            return
+
+        pos = parent.mapFromGlobal(event.globalPos())
+
+        new_x = pos.x() - (self.width() // 2)
+        # clamp
+        new_x = max(0, min(new_x, max(0, parent.width() - self.width())))
+
+        self.move(new_x, self.y())
+
+        if self.moved_callback:
+            fraction = 0.0
+            span = max(1, parent.width() - self.width())
+            fraction = new_x / span
+            self.moved_callback(self.name, fraction)
+
+    def mouseReleaseEvent(self, event):
+        self._dragging = False
+        self.setCursor(Qt.OpenHandCursor)
+
+
 class FrameExtractorMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -104,44 +148,100 @@ class FrameExtractorMainWindow(QMainWindow):
         main_layout.addLayout(file_layout)
 
         # --------------------------------------------------------------
-        # Video Preview Area
+        # Video Preview Card (mobile-inspired)
         # --------------------------------------------------------------
 
-        self.image_display = QLabel()
+        # Main white card containing the preview, action button and
+        # thumbnail strip to resemble the provided mobile mockup.
+        self.preview_card = QWidget()
+        card_layout = QVBoxLayout(self.preview_card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(8)
 
-        self.image_display.setAlignment(Qt.AlignCenter)
-
-        self.image_display.setStyleSheet("""
-            border: none;
-            background: transparent;
-            padding: 0px;
-            margin: 0px;
+        self.preview_card.setStyleSheet("""
+            background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #ffffff, stop:1 #fbfbfb);
+            border-radius: 18px;
+            border: 1px solid rgba(0,0,0,0.06);
         """)
 
-        self.image_display.setMinimumSize(0, 0)
+        self.image_display = QLabel()
+        self.image_display.setAlignment(Qt.AlignCenter)
+        self.image_display.setStyleSheet("border: none; background: transparent;")
+        self.image_display.setMinimumSize(360, 640)
 
         self.preview_scroll = QScrollArea()
-
         self.preview_scroll.setWidgetResizable(True)
-
         self.preview_scroll.setAlignment(Qt.AlignCenter)
-
         self.preview_scroll.setFrameShape(QScrollArea.NoFrame)
-
-        self.preview_scroll.setStyleSheet("""
-            QScrollArea {
-                border: none;
-                background: black;
-            }
-
-            QScrollArea > QWidget > QWidget {
-                background: black;
-            }
-        """)
-
         self.preview_scroll.setWidget(self.image_display)
 
-        main_layout.addWidget(self.preview_scroll, 1)
+        card_layout.addWidget(self.preview_scroll, 1)
+
+        # Primary action button (pink) centered below the preview
+        self.primary_action_button = QPushButton("Photo >")
+        self.primary_action_button.setCursor(Qt.PointingHandCursor)
+        self.primary_action_button.setFixedHeight(44)
+        self.primary_action_button.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #ff69b4, stop:1 #d96bff);
+                color: white;
+                border-radius: 22px;
+                padding: 8px 20px;
+                font-weight: bold;
+            }
+            QPushButton:pressed { opacity: 0.9 }
+        """)
+        self.primary_action_button.clicked.connect(self.export_current_frame)
+
+        action_holder = QWidget()
+        ah_layout = QHBoxLayout(action_holder)
+        ah_layout.setContentsMargins(0, 0, 0, 0)
+        ah_layout.addStretch(1)
+        ah_layout.addWidget(self.primary_action_button)
+        ah_layout.addStretch(1)
+
+        card_layout.addWidget(action_holder)
+
+        # Thumbnail strip (scrollable) below the action button
+        self.thumbnail_scroll = QScrollArea()
+        self.thumbnail_scroll.setFixedHeight(96)
+        self.thumbnail_scroll.setWidgetResizable(True)
+        self.thumbnail_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.thumbnail_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.thumbnail_scroll.setFrameShape(QScrollArea.NoFrame)
+
+        self.thumbnail_container = QWidget()
+        self.thumbnail_layout = QHBoxLayout(self.thumbnail_container)
+        self.thumbnail_layout.setContentsMargins(8, 8, 8, 8)
+        self.thumbnail_layout.setSpacing(8)
+
+        # placeholders for thumbnails
+        self.thumbnail_labels = []
+        for i in range(7):
+            lbl = QLabel()
+            lbl.setFixedSize(80, 64)
+            lbl.setStyleSheet("border-radius:8px; background:#eee;")
+            lbl.setAlignment(Qt.AlignCenter)
+            self.thumbnail_layout.addWidget(lbl)
+            self.thumbnail_labels.append(lbl)
+
+        self.thumbnail_container.setLayout(self.thumbnail_layout)
+        self.thumbnail_scroll.setWidget(self.thumbnail_container)
+
+        # draggable start/end handles over the thumbnail strip
+        self.left_handle = DraggableHandle(self.thumbnail_container, self.handle_moved, name="left")
+        self.right_handle = DraggableHandle(self.thumbnail_container, self.handle_moved, name="right")
+
+        # position handles initially at ends (they'll be updated later)
+        self.left_handle.move(8, 16)
+        self.right_handle.move(max(0, self.thumbnail_container.width() - self.right_handle.width() - 8), 16)
+
+        self.left_handle.show()
+        self.right_handle.show()
+
+        card_layout.addWidget(self.thumbnail_scroll)
+
+        main_layout.addWidget(self.preview_card, 1)
 
         # --------------------------------------------------------------
         # Export Buttons
@@ -578,6 +678,94 @@ class FrameExtractorMainWindow(QMainWindow):
         self.status_label.setText(
             f"Previewing frame {frame_index}."
         )
+        # update thumbnail strip to reflect nearby frames
+        try:
+            self.update_thumbnails()
+        except Exception:
+            pass
+
+    def update_thumbnails(self):
+        if not self.cap:
+            return
+
+        start = self.start_slider.value()
+        end = self.end_slider.value()
+        preview = self.preview_slider.value()
+
+        # choose a window of indices centered on preview
+        window = 3
+        indices = list(range(preview - window, preview + window + 1))
+
+        for i, lbl in enumerate(self.thumbnail_labels):
+            if i < len(indices):
+                idx = indices[i]
+                if idx < start or idx > end:
+                    lbl.clear()
+                    lbl.setStyleSheet("border-radius:8px; background:#eee;")
+                    continue
+
+                frame = self.read_frame(idx)
+                if frame is None:
+                    lbl.clear()
+                    continue
+
+                pix = self.frame_to_pixmap(frame)
+                thumb = pix.scaled(
+                    lbl.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+                )
+
+                lbl.setPixmap(thumb)
+
+                # highlight the current preview thumbnail
+                if idx == preview:
+                    lbl.setStyleSheet("border-radius:8px; border: 3px solid #ff69b4;")
+                else:
+                    lbl.setStyleSheet("border-radius:8px; background:#00000000;")
+            else:
+                lbl.clear()
+                lbl.setStyleSheet("border-radius:8px; background:#eee;")
+
+        # reposition draggable handles according to start/end indices
+        try:
+            if self.frame_count > 1:
+                span = max(1, self.thumbnail_container.width() - self.left_handle.width())
+
+                left_frac = self.start_slider.value() / max(1, self.frame_count - 1)
+                right_frac = self.end_slider.value() / max(1, self.frame_count - 1)
+
+                left_x = int(left_frac * span)
+                right_x = int(right_frac * span)
+
+                # clamp within container
+                left_x = max(0, min(left_x, span))
+                right_x = max(0, min(right_x, span))
+
+                self.left_handle.move(left_x, self.left_handle.y())
+                self.right_handle.move(right_x, self.right_handle.y())
+        except Exception:
+            pass
+
+    def handle_moved(self, name, fraction):
+        if not self.cap or self.frame_count <= 0:
+            return
+
+        idx = int(round(fraction * (self.frame_count - 1)))
+
+        if name == "left":
+            # don't allow left > current end
+            idx = max(0, min(idx, self.end_slider.value()))
+            self.start_slider.setValue(idx)
+        else:
+            # don't allow right < current start
+            idx = min(self.frame_count - 1, max(idx, self.start_slider.value()))
+            self.end_slider.setValue(idx)
+
+        self.update_slider_labels()
+        # update preview to reflect dragged position
+        self.preview_slider.setValue(idx)
+        self.update_preview()
+
+
 
     # ------------------------------------------------------------------
     # Export Selected Frames
