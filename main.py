@@ -338,19 +338,6 @@ class FrameExtractorMainWindow(QMainWindow):
             self.end_slider_changed
         )
 
-        self.preview_index_label = QLabel(
-            "Preview frame: 0"
-        )
-
-        self.preview_slider = QSlider(Qt.Horizontal)
-
-        self.preview_slider.setMinimum(0)
-        self.preview_slider.setEnabled(False)
-
-        self.preview_slider.valueChanged.connect(
-            self.preview_slider_changed
-        )
-
         self.range_label = QLabel(
             "Selected range: 0 - 0 (0 frames)"
         )
@@ -365,14 +352,6 @@ class FrameExtractorMainWindow(QMainWindow):
 
         slider_layout.addWidget(self.end_label)
         slider_layout.addWidget(self.end_slider)
-
-        slider_layout.addWidget(
-            self.preview_index_label
-        )
-
-        slider_layout.addWidget(
-            self.preview_slider
-        )
 
         slider_layout.addWidget(
             self.range_label
@@ -475,15 +454,12 @@ class FrameExtractorMainWindow(QMainWindow):
 
         self.start_slider.setMaximum(max_index)
         self.end_slider.setMaximum(max_index)
-        self.preview_slider.setMaximum(max_index)
 
         self.start_slider.setEnabled(True)
         self.end_slider.setEnabled(True)
-        self.preview_slider.setEnabled(True)
 
         self.start_slider.setValue(0)
         self.end_slider.setValue(max_index)
-        self.preview_slider.setValue(0)
 
         self.export_selected_button.setEnabled(True)
 
@@ -515,11 +491,6 @@ class FrameExtractorMainWindow(QMainWindow):
             f"End frame: {end_value}"
         )
 
-        self.preview_index_label.setText(
-            f"Preview frame: "
-            f"{self.preview_slider.value()}"
-        )
-
         self.range_label.setText(
             f"Selected range: "
             f"{start_value} - {end_value} "
@@ -534,12 +505,6 @@ class FrameExtractorMainWindow(QMainWindow):
 
         self.end_slider.setMinimum(value)
 
-        self.preview_slider.blockSignals(True)
-
-        self.preview_slider.setValue(value)
-
-        self.preview_slider.blockSignals(False)
-
         self.update_slider_labels()
         self.update_preview()
 
@@ -550,33 +515,6 @@ class FrameExtractorMainWindow(QMainWindow):
             self.start_slider.setValue(value)
 
         self.start_slider.setMaximum(value)
-
-        if self.preview_slider.value() > value:
-            self.preview_slider.blockSignals(True)
-
-            self.preview_slider.setValue(value)
-
-            self.preview_slider.blockSignals(False)
-
-        self.update_slider_labels()
-        self.update_preview()
-
-    def preview_slider_changed(self):
-        preview_val = self.preview_slider.value()
-
-        if preview_val < self.start_slider.value():
-            self.start_slider.blockSignals(True)
-
-            self.start_slider.setValue(preview_val)
-
-            self.start_slider.blockSignals(False)
-
-        if preview_val > self.end_slider.value():
-            self.end_slider.blockSignals(True)
-
-            self.end_slider.setValue(preview_val)
-
-            self.end_slider.blockSignals(False)
 
         self.update_slider_labels()
         self.update_preview()
@@ -643,7 +581,7 @@ class FrameExtractorMainWindow(QMainWindow):
         return QPixmap.fromImage(qimage)
 
     def update_preview(self):
-        frame_index = self.preview_slider.value()
+        frame_index = self.start_slider.value()
 
         frame = self.read_frame(frame_index)
 
@@ -690,7 +628,7 @@ class FrameExtractorMainWindow(QMainWindow):
 
         start = self.start_slider.value()
         end = self.end_slider.value()
-        preview = self.preview_slider.value()
+        preview = self.start_slider.value()
 
         # choose a window of indices centered on preview
         window = 3
@@ -761,8 +699,6 @@ class FrameExtractorMainWindow(QMainWindow):
             self.end_slider.setValue(idx)
 
         self.update_slider_labels()
-        # update preview to reflect dragged position
-        self.preview_slider.setValue(idx)
         self.update_preview()
 
 
@@ -901,7 +837,7 @@ class FrameExtractorMainWindow(QMainWindow):
             return
 
         frame_index = (
-            self.preview_slider.value()
+            self.start_slider.value()
         )
 
         frame = self.read_frame(frame_index)
