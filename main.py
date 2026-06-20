@@ -2,7 +2,7 @@ import os
 import sys
 
 import cv2
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -84,6 +84,10 @@ class FrameExtractorMainWindow(QMainWindow):
 
         self.selected_export_folder = None
 
+        self.preview_update_timer = QTimer(self)
+        self.preview_update_timer.setSingleShot(True)
+        self.preview_update_timer.timeout.connect(self.update_preview)
+
         self.setup_ui()
 
     # ------------------------------------------------------------------
@@ -151,8 +155,7 @@ class FrameExtractorMainWindow(QMainWindow):
         # Video Preview Card (mobile-inspired)
         # --------------------------------------------------------------
 
-        # Main white card containing the preview, action button and
-        # thumbnail strip to resemble the provided mobile mockup.
+        # Main white card containing the preview and action button.
         self.preview_card = QWidget()
         card_layout = QVBoxLayout(self.preview_card)
         card_layout.setContentsMargins(12, 12, 12, 12)
@@ -201,45 +204,6 @@ class FrameExtractorMainWindow(QMainWindow):
         ah_layout.addStretch(1)
 
         card_layout.addWidget(action_holder)
-
-        # Thumbnail strip (scrollable) below the action button
-        self.thumbnail_scroll = QScrollArea()
-        self.thumbnail_scroll.setFixedHeight(96)
-        self.thumbnail_scroll.setWidgetResizable(True)
-        self.thumbnail_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.thumbnail_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.thumbnail_scroll.setFrameShape(QScrollArea.NoFrame)
-
-        self.thumbnail_container = QWidget()
-        self.thumbnail_layout = QHBoxLayout(self.thumbnail_container)
-        self.thumbnail_layout.setContentsMargins(8, 8, 8, 8)
-        self.thumbnail_layout.setSpacing(8)
-
-        # placeholders for thumbnails
-        self.thumbnail_labels = []
-        for i in range(7):
-            lbl = QLabel()
-            lbl.setFixedSize(80, 64)
-            lbl.setStyleSheet("border-radius:8px; background:#eee;")
-            lbl.setAlignment(Qt.AlignCenter)
-            self.thumbnail_layout.addWidget(lbl)
-            self.thumbnail_labels.append(lbl)
-
-        self.thumbnail_container.setLayout(self.thumbnail_layout)
-        self.thumbnail_scroll.setWidget(self.thumbnail_container)
-
-        # draggable start/end handles over the thumbnail strip
-        self.left_handle = DraggableHandle(self.thumbnail_container, self.handle_moved, name="left")
-        self.right_handle = DraggableHandle(self.thumbnail_container, self.handle_moved, name="right")
-
-        # position handles initially at ends (they'll be updated later)
-        self.left_handle.move(8, 16)
-        self.right_handle.move(max(0, self.thumbnail_container.width() - self.right_handle.width() - 8), 16)
-
-        self.left_handle.show()
-        self.right_handle.show()
-
-        card_layout.addWidget(self.thumbnail_scroll)
 
         main_layout.addWidget(self.preview_card, 1)
 
@@ -324,6 +288,12 @@ class FrameExtractorMainWindow(QMainWindow):
         self.start_slider.valueChanged.connect(
             self.start_slider_changed
         )
+        self.start_slider.sliderMoved.connect(
+            lambda _: self.schedule_preview_update()
+        )
+        self.start_slider.sliderReleased.connect(
+            self.update_preview
+        )
 
         self.end_label = QLabel(
             "End frame: 0"
@@ -336,6 +306,12 @@ class FrameExtractorMainWindow(QMainWindow):
 
         self.end_slider.valueChanged.connect(
             self.end_slider_changed
+        )
+        self.end_slider.sliderMoved.connect(
+            lambda _: self.schedule_preview_update()
+        )
+        self.end_slider.sliderReleased.connect(
+            self.update_preview
         )
 
         self.range_label = QLabel(
@@ -471,8 +447,7 @@ class FrameExtractorMainWindow(QMainWindow):
         self.update_preview()
 
         self.status_label.setText(
-            "Video loaded. Use the preview slider "
-            "to see individual frames."
+            "Video loaded. Use the sliders to select frames."
         )
 
     # ------------------------------------------------------------------
@@ -506,7 +481,7 @@ class FrameExtractorMainWindow(QMainWindow):
         self.end_slider.setMinimum(value)
 
         self.update_slider_labels()
-        self.update_preview()
+        self.schedule_preview_update()
 
     def end_slider_changed(self, value):
         start_val = self.start_slider.value()
@@ -517,7 +492,30 @@ class FrameExtractorMainWindow(QMainWindow):
         self.start_slider.setMaximum(value)
 
         self.update_slider_labels()
+        self.schedule_preview_update()
+
+    def keyPressEvent(self, event):
+        if not self.cap:
+            return
+
+        key = event.key()
+        current = self.start_slider.value()
+        step = 1
+
+        if key == Qt.Key_Right or key == Qt.Key_Down:
+            new_value = min(self.end_slider.value(), current + step)
+        elif key == Qt.Key_Left or key == Qt.Key_Up:
+            new_value = max(self.start_slider.minimum(), current - step)
+        else:
+            super().keyPressEvent(event)
+            return
+
+        self.start_slider.setValue(new_value)
+        self.update_slider_labels()
         self.update_preview()
+
+    def schedule_preview_update(self):
+        self.preview_update_timer.start(30)
 
     # ------------------------------------------------------------------
     # Export Folder
@@ -602,7 +600,7 @@ class FrameExtractorMainWindow(QMainWindow):
         scaled_pixmap = pixmap.scaled(
             viewport_size,
             Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
+            Qt.FastTransformation,
         )
 
         self.image_display.setPixmap(
@@ -616,90 +614,7 @@ class FrameExtractorMainWindow(QMainWindow):
         self.status_label.setText(
             f"Previewing frame {frame_index}."
         )
-        # update thumbnail strip to reflect nearby frames
-        try:
-            self.update_thumbnails()
-        except Exception:
-            pass
 
-    def update_thumbnails(self):
-        if not self.cap:
-            return
-
-        start = self.start_slider.value()
-        end = self.end_slider.value()
-        preview = self.start_slider.value()
-
-        # choose a window of indices centered on preview
-        window = 3
-        indices = list(range(preview - window, preview + window + 1))
-
-        for i, lbl in enumerate(self.thumbnail_labels):
-            if i < len(indices):
-                idx = indices[i]
-                if idx < start or idx > end:
-                    lbl.clear()
-                    lbl.setStyleSheet("border-radius:8px; background:#eee;")
-                    continue
-
-                frame = self.read_frame(idx)
-                if frame is None:
-                    lbl.clear()
-                    continue
-
-                pix = self.frame_to_pixmap(frame)
-                thumb = pix.scaled(
-                    lbl.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
-                )
-
-                lbl.setPixmap(thumb)
-
-                # highlight the current preview thumbnail
-                if idx == preview:
-                    lbl.setStyleSheet("border-radius:8px; border: 3px solid #ff69b4;")
-                else:
-                    lbl.setStyleSheet("border-radius:8px; background:#00000000;")
-            else:
-                lbl.clear()
-                lbl.setStyleSheet("border-radius:8px; background:#eee;")
-
-        # reposition draggable handles according to start/end indices
-        try:
-            if self.frame_count > 1:
-                span = max(1, self.thumbnail_container.width() - self.left_handle.width())
-
-                left_frac = self.start_slider.value() / max(1, self.frame_count - 1)
-                right_frac = self.end_slider.value() / max(1, self.frame_count - 1)
-
-                left_x = int(left_frac * span)
-                right_x = int(right_frac * span)
-
-                # clamp within container
-                left_x = max(0, min(left_x, span))
-                right_x = max(0, min(right_x, span))
-
-                self.left_handle.move(left_x, self.left_handle.y())
-                self.right_handle.move(right_x, self.right_handle.y())
-        except Exception:
-            pass
-
-    def handle_moved(self, name, fraction):
-        if not self.cap or self.frame_count <= 0:
-            return
-
-        idx = int(round(fraction * (self.frame_count - 1)))
-
-        if name == "left":
-            # don't allow left > current end
-            idx = max(0, min(idx, self.end_slider.value()))
-            self.start_slider.setValue(idx)
-        else:
-            # don't allow right < current start
-            idx = min(self.frame_count - 1, max(idx, self.start_slider.value()))
-            self.end_slider.setValue(idx)
-
-        self.update_slider_labels()
-        self.update_preview()
 
 
 
